@@ -4,6 +4,39 @@ checkpoints/
 data/
 wandb/
 
+# Checkpoint files (explicit patterns to ensure all ckpt files are excluded)
+*.ckpt
+*.ckpt.*
+*.pt
+*.safetensors
+checkpoint_*
+*_checkpoint/
+*_checkpoints/
+
+# Large data directories
+BAG_STORAGE/
+*_bag_h5/
+plate/
+plate_new/
+pick_blue_bottle_extracted/
+libero_videos_prune/
+siglip_attention_heatmaps/
+gripper_images/
+gripper_samples/
+openpi/
+
+# Data file formats
+*.h5
+*.hdf5
+*.db3
+*.mp4
+*.png
+*.jpg
+*.jpeg
+!assets/**/*.png
+!assets/**/*.jpg
+!assets/**/*.jpeg
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

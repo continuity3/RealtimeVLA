@@ -31,6 +31,45 @@ class Pi0Config(_model.BaseModelConfig):
     pi05: bool = False
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
+    
+    # ToMe (Token Merging) configuration
+    tome_enabled: bool = False # Enable/disable ToMe
+    tome_ratio: float = 0.75  # Ratio of tokens to keep (0.0 to 1.0). 0.75 means keep 75% of tokens
+    tome_metric: str = "cosine"  # Similarity metric: "cosine" or "euclidean"
+    tome_interval: int = 1  # How often to apply ToMe (every N layers). 1 means apply every layer
+    
+    # ToFu (Token Filtering/Fusion) configuration
+    tofu_enabled: bool = False  # Enable/disable ToFu
+    tofu_ratio: float = 0.95  # Ratio of tokens to keep after filtering (0.0 to 1.0)
+    tofu_method: str = "norm"  # Importance computation method: "norm", "variance", or "attention"
+    tofu_use_fusion: bool = False  # Whether to apply fusion after filtering (if True, final ratio = tofu_ratio * tofu_fusion_ratio)
+    tofu_fusion_ratio: float = 0.5  # Ratio of tokens to keep after fusion (applied to filtered tokens)
+    tofu_interval: int = 1  # How often to apply ToFu (every N layers)
+    
+    # V2Drop (Variation-aware Vision Token Dropping) configuration
+    v2drop_enabled: bool = False  # Enable/disable V2Drop
+    v2drop_ratio: float = 0.05  # Ratio of vision tokens to drop (0.0 to 1.0)
+    v2drop_method: str = "l2"  # Variation computation method: "l2", "cosine", "abs"
+    v2drop_interval: int = 1  # How often to apply V2Drop (every N LLM layers)
+    v2drop_min_tokens: int = 1  # Minimum number of vision tokens to keep
+
+    # SnapKV (KV Cache Compression) configuration
+    snapkv_enabled: bool = False  # Enable/disable SnapKV
+    snapkv_compression_ratio: float = 0.5  # Ratio of KV positions to keep (0.0 to 1.0). 0.5 means keep 50% of KV positions
+    snapkv_observation_window: int = 32  # Number of tokens at the end to use as observation window
+    snapkv_clustering_method: str = "topk"  # Clustering method: "topk" or "kmeans"
+    
+    # LeanK (Learnable K Cache Channel Pruning) configuration
+    leank_enabled: bool = False  # Enable/disable LeanK
+    leank_pruning_ratio: float = 0.5  # Ratio of K cache channels to keep (0.0 to 1.0). 0.5 means keep 50% of channels
+    leank_method: str = "magnitude"  # Method for computing channel importance: "learnable", "magnitude", or "variance"
+    leank_topk: bool = True  # If True, use top-k selection; if False, use threshold-based selection
+    
+    # SparseVLM (Visual Token Sparsification) configuration
+    sparsevlm_enabled: bool = False  # Enable/disable SparseVLM
+    sparsevlm_num_retain: int = 192  # Number of vision tokens to retain (192, 128, 96, or 64)
+    sparsevlm_method: str = "cross_attention"  # Method for computing text-visual attention: "cross_attention", "cosine", or "dot_product"
+    sparsevlm_version: str = "1.5"  # SparseVLM version: "1.5" or "2.0" (SparseVLM+)
 
     def __post_init__(self):
         if self.max_token_len is None:

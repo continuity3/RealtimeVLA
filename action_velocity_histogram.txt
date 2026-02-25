@@ -1,0 +1,31 @@
+
+    Statistics:
+    ===========
+    
+    Total timesteps: 34,079
+    Action dimensions: 7
+    
+    Velocity Magnitude:
+    -------------------
+    Mean:     0.001710
+    Median:   0.001638
+    Std:      0.000602
+    Min:      0.000000
+    Max:      0.014386
+    
+    Percentiles:
+    P25:      0.001325
+    P75:      0.001994
+    P90:      0.002378
+    P95:      0.002684
+    P99:      0.003608
+    
+    Per Dimension Stats (Mean |V|):
+    
+  Dim 0: 0.000582
+  Dim 1: 0.000522
+  Dim 2: 0.000457
+  Dim 3: 0.000542
+  Dim 4: 0.000523
+  Dim 5: 0.000570
+  Dim 6: 0.000525

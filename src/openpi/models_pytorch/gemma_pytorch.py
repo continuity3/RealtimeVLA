@@ -16,6 +16,11 @@ class PaliGemmaWithExpertModel(nn.Module):
         action_expert_config,
         use_adarms=None,
         precision: Literal["bfloat16", "float32"] = "bfloat16",
+        tome_config=None,  # ToMe configuration dict: {enabled, ratio, metric}
+        tofu_config=None,  # ToFu configuration dict: {enabled, ratio, method, use_fusion, fusion_ratio}
+        v2drop_config=None,  # V2Drop configuration dict: {enabled, ratio, method, interval, min_tokens}
+        snapkv_config=None,  # SnapKV configuration dict: {enabled, compression_ratio, observation_window, clustering_method}
+        leank_config=None,  # LeanK configuration dict: {enabled, pruning_ratio, method, topk}
     ):
         if use_adarms is None:
             use_adarms = [False, False]
@@ -39,6 +44,102 @@ class PaliGemmaWithExpertModel(nn.Module):
         vlm_config_hf.vision_config.projection_dim = 2048
         vlm_config_hf.vision_config.projector_hidden_act = "gelu_fast"
         vlm_config_hf.vision_config.torch_dtype = "float32"
+        
+        # Pass ToMe configuration to vision_config
+        if tome_config is not None:
+            # Use setattr to ensure attributes are set even if config object doesn't support direct assignment
+            setattr(vlm_config_hf.vision_config, 'tome_enabled', tome_config.get("enabled", False))
+            setattr(vlm_config_hf.vision_config, 'tome_ratio', tome_config.get("ratio", 0.75))
+            setattr(vlm_config_hf.vision_config, 'tome_metric', tome_config.get("metric", "cosine"))
+            setattr(vlm_config_hf.vision_config, 'tome_interval', tome_config.get("interval", 1))
+        
+        # Pass ToFu configuration to vision_config
+        if tofu_config is not None:
+            setattr(vlm_config_hf.vision_config, 'tofu_enabled', tofu_config.get("enabled", False))
+            setattr(vlm_config_hf.vision_config, 'tofu_ratio', tofu_config.get("ratio", 0.75))
+            setattr(vlm_config_hf.vision_config, 'tofu_method', tofu_config.get("method", "norm"))
+            setattr(vlm_config_hf.vision_config, 'tofu_use_fusion', tofu_config.get("use_fusion", True))
+            setattr(vlm_config_hf.vision_config, 'tofu_fusion_ratio', tofu_config.get("fusion_ratio", 0.5))
+            setattr(vlm_config_hf.vision_config, 'tofu_interval', tofu_config.get("interval", 1))
+        
+        # Store V2Drop configuration
+        self.v2drop_config = v2drop_config
+        # Always try to import V2Drop module (for availability check)
+        try:
+            import openpi.models_pytorch.v2drop_pytorch as _v2drop_module
+            self._v2drop_module = _v2drop_module
+            self._v2drop_available = True
+        except ImportError:
+            self._v2drop_module = None
+            self._v2drop_available = False
+            print("[V2Drop] ⚠️ V2Drop module not available")
+        
+        # Log status based on config
+        if v2drop_config is not None:
+            if v2drop_config.get("enabled", False) and self._v2drop_available:
+                msg = (
+                    f"[V2Drop] ✅ Enabled in LLM: drop_ratio={v2drop_config.get('ratio', 0.5):.3f}, "
+                    f"method={v2drop_config.get('method', 'l2')}, "
+                    f"interval={v2drop_config.get('interval', 1)}, "
+                    f"min_tokens={v2drop_config.get('min_tokens', 1)}"
+                )
+                print(msg)
+            elif not v2drop_config.get("enabled", False):
+                print(f"[V2Drop] ⚠️ V2Drop disabled in config (enabled=False)")
+            elif not self._v2drop_available:
+                print("[V2Drop] ⚠️ V2Drop module not available")
+        
+        # Store SnapKV configuration
+        self.snapkv_config = snapkv_config
+        # Always try to import SnapKV module
+        try:
+            from openpi.models_pytorch import snapkv_pytorch as _snapkv_module
+            self._snapkv_module = _snapkv_module
+            self._snapkv_available = True
+        except ImportError:
+            self._snapkv_module = None
+            self._snapkv_available = False
+            print("[SnapKV] ⚠️ SnapKV module not available")
+        
+        # Log SnapKV status
+        if snapkv_config is not None:
+            if snapkv_config.get("enabled", False) and self._snapkv_available:
+                msg = (
+                    f"[SnapKV] ✅ Enabled: compression_ratio={snapkv_config.get('compression_ratio', 0.5):.3f}, "
+                    f"observation_window={snapkv_config.get('observation_window', 32)}, "
+                    f"clustering_method={snapkv_config.get('clustering_method', 'topk')}"
+                )
+                print(msg)
+            elif not snapkv_config.get("enabled", False):
+                print(f"[SnapKV] ⚠️ SnapKV disabled in config (enabled=False)")
+            elif not self._snapkv_available:
+                print("[SnapKV] ⚠️ SnapKV module not available")
+        
+        # Store LeanK configuration
+        self.leank_config = leank_config
+        # Always try to import LeanK module
+        try:
+            from openpi.models_pytorch import leank_pytorch as _leank_module
+            self._leank_module = _leank_module
+            self._leank_available = True
+        except ImportError:
+            self._leank_module = None
+            self._leank_available = False
+            print("[LeanK] ⚠️ LeanK module not available")
+        
+        # Log LeanK status
+        if leank_config is not None:
+            if leank_config.get("enabled", False) and self._leank_available:
+                msg = (
+                    f"[LeanK] ✅ Enabled: pruning_ratio={leank_config.get('pruning_ratio', 0.5):.3f}, "
+                    f"method={leank_config.get('method', 'magnitude')}, "
+                    f"topk={leank_config.get('topk', True)}"
+                )
+                print(msg)
+            elif not leank_config.get("enabled", False):
+                print(f"[LeanK] ⚠️ LeanK disabled in config (enabled=False)")
+            elif not self._leank_available:
+                print("[LeanK] ⚠️ LeanK module not available")
 
         action_expert_config_hf = CONFIG_MAPPING["gemma"](
             head_dim=action_expert_config.head_dim,
@@ -100,17 +201,258 @@ class PaliGemmaWithExpertModel(nn.Module):
         if adarms_cond is None:
             adarms_cond = [None, None]
         if inputs_embeds[1] is None:
-            prefix_output = self.paligemma.language_model.forward(
-                inputs_embeds=inputs_embeds[0],
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_values=past_key_values,
-                use_cache=use_cache,
-                adarms_cond=adarms_cond[0] if adarms_cond is not None else None,
-            )
-            prefix_past_key_values = prefix_output.past_key_values
-            prefix_output = prefix_output.last_hidden_state
-            suffix_output = None
+            # Prefix forward: manually process layers to apply V2Drop
+            if (self._v2drop_available 
+                and self.v2drop_config is not None 
+                and self.v2drop_config.get("enabled", False)):
+                # Manual layer-by-layer processing with V2Drop
+                hidden_states = inputs_embeds[0]
+                # In prefix, tokens are: vision tokens + language tokens
+                # We need to estimate num_vision_tokens from the total sequence length
+                # For SigLIP: 3 images × 256 tokens = 768 vision tokens (typical case)
+                # Language tokens are typically 10-100 tokens
+                total_tokens = hidden_states.shape[1]
+                
+                # Heuristic: estimate vision tokens based on typical patterns
+                # Common cases:
+                # - 3 images × 256 = 768 vision tokens + ~20-50 lang tokens = ~790-820 total
+                # - 1 image × 256 = 256 vision tokens + ~20-50 lang tokens = ~280-310 total
+                if total_tokens >= 700:
+                    # Likely 3 images: estimate vision tokens as total - typical_lang_tokens
+                    num_vision_tokens = max(1, total_tokens - 50)  # Assume ~50 lang tokens
+                elif total_tokens >= 250:
+                    # Likely 1 image: estimate vision tokens as total - typical_lang_tokens
+                    num_vision_tokens = max(1, total_tokens - 50)  # Assume ~50 lang tokens
+                else:
+                    # For smaller sequences, assume all are vision tokens
+                    num_vision_tokens = total_tokens
+                
+                print(f"[V2Drop] Prefix forward: total_tokens={total_tokens}, estimated num_vision_tokens={num_vision_tokens}")
+                num_layers = self.paligemma.config.text_config.num_hidden_layers
+                
+                # Initialize past_key_values if use_cache and not provided
+                if use_cache and past_key_values is None:
+                    from transformers.cache_utils import DynamicCache
+                    past_key_values = DynamicCache()
+                
+                # Compute position_embeddings once (used by all layers)
+                position_embeddings = self.paligemma.language_model.rotary_emb(hidden_states, position_ids)
+                
+                # Compute cache_position if needed
+                if use_cache and past_key_values is not None:
+                    cache_position = torch.arange(
+                        past_key_values.get_seq_length(),
+                        past_key_values.get_seq_length() + hidden_states.shape[1],
+                        device=hidden_states.device
+                    )
+                else:
+                    cache_position = None
+                
+                for layer_idx in range(num_layers):
+                    tokens_before = hidden_states.clone()
+                    
+                    # Process one layer
+                    layer = self.paligemma.language_model.layers[layer_idx]
+                    layer_outputs = layer(
+                        hidden_states,
+                        attention_mask=attention_mask,
+                        position_ids=position_ids,
+                        past_key_value=past_key_values,  # Pass the Cache object, not a list element
+                        use_cache=use_cache,
+                        cache_position=cache_position,
+                        position_embeddings=position_embeddings,  # Pass pre-computed position embeddings
+                        adarms_cond=adarms_cond[0] if adarms_cond is not None else None,
+                        output_attentions=False,  # We don't need attention weights
+                    )
+                    # layer_outputs is a tuple: (hidden_states,) or (hidden_states, self_attn_weights)
+                    hidden_states = layer_outputs[0]
+                    
+                    # Apply V2Drop after each layer (only in first 5 layers)
+                    if layer_idx < 5 and layer_idx % self.v2drop_config.get("interval", 1) == 0:
+                        tokens_after = hidden_states
+                        original_num_tokens = tokens_after.shape[1]
+                        original_num_vision = num_vision_tokens
+                        
+                        filtered_tokens, keep_mask = self._v2drop_module.apply_v2drop(
+                            tokens_before=tokens_before,
+                            tokens_after=tokens_after,
+                            num_vision_tokens=num_vision_tokens,
+                            drop_ratio=self.v2drop_config.get("ratio", 0.5),
+                            method=self.v2drop_config.get("method", "l2"),
+                            enabled=True,
+                            min_tokens=self.v2drop_config.get("min_tokens", 1),
+                        )
+                        
+                        new_num_tokens = filtered_tokens.shape[1]
+                        new_num_vision = keep_mask[:, :num_vision_tokens].sum(dim=1).min().item()
+                        
+                        hidden_states = filtered_tokens
+                        num_vision_tokens = new_num_vision
+                        
+                        # Print debug info if tokens were dropped
+                        if new_num_tokens < original_num_tokens:
+                            reduction_pct = (1.0 - new_num_tokens / original_num_tokens) * 100
+                            vision_reduction_pct = (1.0 - new_num_vision / original_num_vision) * 100 if original_num_vision > 0 else 0.0
+                            msg = (
+                                f"[V2Drop] LLM Layer {layer_idx+1}: {original_num_tokens} -> {new_num_tokens} tokens "
+                                f"(vision: {original_num_vision} -> {new_num_vision}, "
+                                f"total reduction={reduction_pct:.1f}%, vision reduction={vision_reduction_pct:.1f}%)"
+                            )
+                            print(msg)
+                        
+                        # Update attention_mask and position_ids
+                        if attention_mask is not None:
+                            new_seq_len = filtered_tokens.shape[1]
+                            if attention_mask.shape[-1] > new_seq_len:
+                                attention_mask = attention_mask[:, :new_seq_len]
+                            if attention_mask.dim() == 4 and attention_mask.shape[-2] > new_seq_len:
+                                attention_mask = attention_mask[:, :, :new_seq_len, :new_seq_len]
+                        
+                        if position_ids is not None:
+                            new_seq_len = filtered_tokens.shape[1]
+                            if position_ids.shape[1] > new_seq_len:
+                                position_ids = position_ids[:, :new_seq_len]
+                        
+                        # Recompute position_embeddings and cache_position for next layer (token count changed)
+                        position_embeddings = self.paligemma.language_model.rotary_emb(hidden_states, position_ids)
+                        if use_cache and past_key_values is not None:
+                            cache_position = torch.arange(
+                                past_key_values.get_seq_length(),
+                                past_key_values.get_seq_length() + hidden_states.shape[1],
+                                device=hidden_states.device
+                            )
+                
+                # Final norm
+                hidden_states = self.paligemma.language_model.norm(hidden_states)
+                
+                # Create output object matching transformers format
+                from transformers.modeling_outputs import BaseModelOutputWithPast
+                prefix_output = BaseModelOutputWithPast(
+                    last_hidden_state=hidden_states,
+                    past_key_values=past_key_values,
+                )
+                prefix_past_key_values = prefix_output.past_key_values
+                
+                # Apply SnapKV compression to KV cache after prefix forward
+                if (self.snapkv_config is not None 
+                    and self.snapkv_config.get("enabled", False) 
+                    and self._snapkv_available
+                    and prefix_past_key_values is not None
+                    and use_cache):
+                    # Debug: log before compression
+                    if hasattr(prefix_past_key_values, 'key_cache') and len(prefix_past_key_values.key_cache) > 0:
+                        original_seq_len = prefix_past_key_values.key_cache[0].shape[-2]
+                        print(f"[SnapKV] 🔄 Compressing KV cache: original_seq_len={original_seq_len}")
+                    
+                    prefix_past_key_values = self._snapkv_module.apply_snapkv_to_cache(
+                        prefix_past_key_values,
+                        compression_ratio=self.snapkv_config.get("compression_ratio", 0.5),
+                        observation_window=self.snapkv_config.get("observation_window", 32),
+                        clustering_method=self.snapkv_config.get("clustering_method", "topk"),
+                        enabled=True,
+                    )
+                    
+                    # Debug: log after compression
+                    if hasattr(prefix_past_key_values, 'key_cache') and len(prefix_past_key_values.key_cache) > 0:
+                        compressed_seq_len = prefix_past_key_values.key_cache[0].shape[-2]
+                        compression_ratio_actual = compressed_seq_len / original_seq_len if original_seq_len > 0 else 1.0
+                        print(f"[SnapKV] ✅ KV cache compressed: {original_seq_len} → {compressed_seq_len} tokens "
+                              f"(ratio={compression_ratio_actual:.3f}, reduction={(1-compression_ratio_actual)*100:.1f}%)")
+                
+                # Apply LeanK channel pruning to K cache after SnapKV (if enabled)
+                if (self.leank_config is not None 
+                    and self.leank_config.get("enabled", False) 
+                    and self._leank_available
+                    and prefix_past_key_values is not None
+                    and use_cache):
+                    if hasattr(prefix_past_key_values, 'key_cache') and len(prefix_past_key_values.key_cache) > 0:
+                        original_head_dim = prefix_past_key_values.key_cache[0].shape[-1]
+                        print(f"[LeanK] 🔄 Pruning K cache channels: original_head_dim={original_head_dim}")
+                    
+                    prefix_past_key_values = self._leank_module.apply_leank_to_cache(
+                        prefix_past_key_values,
+                        pruning_ratio=self.leank_config.get("pruning_ratio", 0.5),
+                        method=self.leank_config.get("method", "magnitude"),
+                        scorer=None,  # For inference, use non-learnable methods
+                        topk=self.leank_config.get("topk", True),
+                        enabled=True,
+                    )
+                    
+                    # Debug: log after pruning
+                    if hasattr(prefix_past_key_values, 'key_cache') and len(prefix_past_key_values.key_cache) > 0:
+                        pruned_head_dim = prefix_past_key_values.key_cache[0].shape[-1]
+                        pruning_ratio_actual = pruned_head_dim / original_head_dim if original_head_dim > 0 else 1.0
+                        print(f"[LeanK] ✅ K cache channels pruned: {original_head_dim} → {pruned_head_dim} dims "
+                              f"(ratio={pruning_ratio_actual:.3f}, reduction={(1-pruning_ratio_actual)*100:.1f}%)")
+                
+                prefix_output = prefix_output.last_hidden_state
+                suffix_output = None
+            else:
+                # Standard forward without V2Drop
+                prefix_output = self.paligemma.language_model.forward(
+                    inputs_embeds=inputs_embeds[0],
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_values=past_key_values,
+                    use_cache=use_cache,
+                    adarms_cond=adarms_cond[0] if adarms_cond is not None else None,
+                )
+                prefix_past_key_values = prefix_output.past_key_values
+                
+                # Apply SnapKV compression to KV cache after prefix forward
+                if (self.snapkv_config is not None 
+                    and self.snapkv_config.get("enabled", False) 
+                    and self._snapkv_available
+                    and prefix_past_key_values is not None
+                    and use_cache):
+                    # Debug: log before compression
+                    if hasattr(prefix_past_key_values, 'key_cache') and len(prefix_past_key_values.key_cache) > 0:
+                        original_seq_len = prefix_past_key_values.key_cache[0].shape[-2]
+                        print(f"[SnapKV] 🔄 Compressing KV cache: original_seq_len={original_seq_len}")
+                    
+                    prefix_past_key_values = self._snapkv_module.apply_snapkv_to_cache(
+                        prefix_past_key_values,
+                        compression_ratio=self.snapkv_config.get("compression_ratio", 0.5),
+                        observation_window=self.snapkv_config.get("observation_window", 32),
+                        clustering_method=self.snapkv_config.get("clustering_method", "topk"),
+                        enabled=True,
+                    )
+                    
+                    # Debug: log after compression
+                    if hasattr(prefix_past_key_values, 'key_cache') and len(prefix_past_key_values.key_cache) > 0:
+                        compressed_seq_len = prefix_past_key_values.key_cache[0].shape[-2]
+                        compression_ratio_actual = compressed_seq_len / original_seq_len if original_seq_len > 0 else 1.0
+                        print(f"[SnapKV] ✅ KV cache compressed: {original_seq_len} → {compressed_seq_len} tokens "
+                              f"(ratio={compression_ratio_actual:.3f}, reduction={(1-compression_ratio_actual)*100:.1f}%)")
+                
+                # Apply LeanK channel pruning to K cache after SnapKV (if enabled)
+                if (self.leank_config is not None 
+                    and self.leank_config.get("enabled", False) 
+                    and self._leank_available
+                    and prefix_past_key_values is not None
+                    and use_cache):
+                    if hasattr(prefix_past_key_values, 'key_cache') and len(prefix_past_key_values.key_cache) > 0:
+                        original_head_dim = prefix_past_key_values.key_cache[0].shape[-1]
+                        print(f"[LeanK] 🔄 Pruning K cache channels: original_head_dim={original_head_dim}")
+                    
+                    prefix_past_key_values = self._leank_module.apply_leank_to_cache(
+                        prefix_past_key_values,
+                        pruning_ratio=self.leank_config.get("pruning_ratio", 0.5),
+                        method=self.leank_config.get("method", "magnitude"),
+                        scorer=None,  # For inference, use non-learnable methods
+                        topk=self.leank_config.get("topk", True),
+                        enabled=True,
+                    )
+                    
+                    # Debug: log after pruning
+                    if hasattr(prefix_past_key_values, 'key_cache') and len(prefix_past_key_values.key_cache) > 0:
+                        pruned_head_dim = prefix_past_key_values.key_cache[0].shape[-1]
+                        pruning_ratio_actual = pruned_head_dim / original_head_dim if original_head_dim > 0 else 1.0
+                        print(f"[LeanK] ✅ K cache channels pruned: {original_head_dim} → {pruned_head_dim} dims "
+                              f"(ratio={pruning_ratio_actual:.3f}, reduction={(1-pruning_ratio_actual)*100:.1f}%)")
+                
+                prefix_output = prefix_output.last_hidden_state
+                suffix_output = None
         elif inputs_embeds[0] is None:
             suffix_output = self.gemma_expert.model.forward(
                 inputs_embeds=inputs_embeds[1],
@@ -237,8 +579,14 @@ class PaliGemmaWithExpertModel(nn.Module):
 
                 return outputs_embeds
 
+            # Get num_vision_tokens from prefix embeddings (first element of inputs_embeds)
+            num_vision_tokens = inputs_embeds[0].shape[1] if inputs_embeds[0] is not None else 0
+            
             # Process all layers with gradient checkpointing if enabled
             for layer_idx in range(num_layers):
+                # Store tokens before layer for V2Drop
+                tokens_before = inputs_embeds[0].clone() if inputs_embeds[0] is not None else None
+                
                 if use_gradient_checkpointing:
                     inputs_embeds = torch.utils.checkpoint.checkpoint(
                         compute_layer_complete,
@@ -254,6 +602,64 @@ class PaliGemmaWithExpertModel(nn.Module):
                     inputs_embeds = compute_layer_complete(
                         layer_idx, inputs_embeds, attention_mask, position_ids, adarms_cond
                     )
+                
+                # Apply V2Drop after each layer (only in first 5 layers, if enabled and interval matches)
+                if (self._v2drop_available 
+                    and self.v2drop_config is not None 
+                    and self.v2drop_config.get("enabled", False)
+                    and tokens_before is not None
+                    and inputs_embeds[0] is not None
+                    and layer_idx < 5  # Only apply in first 5 layers
+                    and layer_idx % self.v2drop_config.get("interval", 1) == 0):
+                    
+                    tokens_after = inputs_embeds[0]
+                    original_num_tokens = tokens_after.shape[1]
+                    original_num_vision = num_vision_tokens
+                    
+                    filtered_tokens, keep_mask = self._v2drop_module.apply_v2drop(
+                        tokens_before=tokens_before,
+                        tokens_after=tokens_after,
+                        num_vision_tokens=num_vision_tokens,
+                        drop_ratio=self.v2drop_config.get("ratio", 0.5),
+                        method=self.v2drop_config.get("method", "l2"),
+                        enabled=True,
+                        min_tokens=self.v2drop_config.get("min_tokens", 1),
+                    )
+                    
+                    new_num_tokens = filtered_tokens.shape[1]
+                    new_num_vision = keep_mask[:, :num_vision_tokens].sum(dim=1).min().item()
+                    
+                    # Update inputs_embeds with filtered tokens
+                    inputs_embeds[0] = filtered_tokens
+                    
+                    # Update num_vision_tokens based on keep_mask
+                    num_vision_tokens = new_num_vision
+                    
+                    # Print debug info if tokens were dropped
+                    if new_num_tokens < original_num_tokens:
+                        reduction_pct = (1.0 - new_num_tokens / original_num_tokens) * 100
+                        vision_reduction_pct = (1.0 - new_num_vision / original_num_vision) * 100 if original_num_vision > 0 else 0.0
+                        msg = (
+                            f"[V2Drop] LLM Layer {layer_idx+1}: {original_num_tokens} -> {new_num_tokens} tokens "
+                            f"(vision: {original_num_vision} -> {new_num_vision}, "
+                            f"total reduction={reduction_pct:.1f}%, vision reduction={vision_reduction_pct:.1f}%)"
+                        )
+                        print(msg)
+                    
+                    # Update attention_mask and position_ids if needed
+                    if attention_mask is not None:
+                        # Adjust attention_mask to match new token count
+                        new_seq_len = filtered_tokens.shape[1]
+                        if attention_mask.shape[-1] > new_seq_len:
+                            attention_mask = attention_mask[:, :new_seq_len]
+                        if attention_mask.dim() == 4 and attention_mask.shape[-2] > new_seq_len:
+                            attention_mask = attention_mask[:, :, :new_seq_len, :new_seq_len]
+                    
+                    if position_ids is not None:
+                        # Adjust position_ids to match new token count
+                        new_seq_len = filtered_tokens.shape[1]
+                        if position_ids.shape[1] > new_seq_len:
+                            position_ids = position_ids[:, :new_seq_len]
 
                 # Old code removed - now using compute_layer_complete function above
 

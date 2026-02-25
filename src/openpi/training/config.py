@@ -761,6 +761,95 @@ _CONFIGS = [
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
     ),
+    TrainConfig(
+        name="pi05_ros2bag_libero",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="your_hf_username/ros2bag_libero",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        batch_size=2,  
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        pytorch_weight_path="/home/wyz/openpi/checkpoints/pi05_libero_pytorch.pt",
+        num_train_steps=30_000,
+        wandb_enabled=False,  # 禁用 wandb 日志
+    ),
+    TrainConfig(
+        name="pi05_plate_libero",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="your_hf_username/plate_libero",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        batch_size=8,  # 根据 GPU 内存调整，2199 步数据较小
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,  # 小数据集，减少 warmup
+            peak_lr=5e-5,
+            decay_steps=10_000,  # 小数据集，减少总步数
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        pytorch_weight_path="/home/wyz/openpi/checkpoints/pi05_libero_pytorch.pt",  # 从 LIBERO 预训练模型开始
+        num_train_steps=5_000,  # 小数据集，减少训练步数避免过拟合
+        wandb_enabled=True,  # 启用 wandb 日志
+    ),
+    TrainConfig(
+        name="pi05_pick_blue_bottle_libero",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="your_hf_username/pick_blue_bottle_libero",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        batch_size=8,  # 101 个文件，数据量中等，根据 GPU 内存调整
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,  # 中等数据集，适当增加 warmup
+            peak_lr=5e-5,
+            decay_steps=30_000,  # 中等数据集，增加训练步数
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        pytorch_weight_path="/home/wyz/openpi/checkpoints/pi05_libero_pytorch.pt",  # 从 LIBERO 预训练模型开始
+        num_train_steps=30_000,  # 101 个文件，中等数据集，适当增加训练步数
+        wandb_enabled=True,  # 启用 wandb 日志
+    ),
+    TrainConfig(
+        name="pi05_pick_blue_bottle_libero_downsample4x",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),  # action_dim=32 (预训练模型是32维，数据会被pad到32维，LiberoOutputs会取前8维)
+        data=LeRobotLiberoDataConfig(
+            repo_id="your_hf_username/pick_blue_bottle_libero_downsample4x",  # 使用下采样后的数据集
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        batch_size=8,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,  # 数据量减少，适当减少 warmup
+            peak_lr=5e-5,
+            decay_steps=30_000,  # 调整为 20000 步
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        pytorch_weight_path="/home/wyz/openpi/checkpoints/pi05_libero_pytorch.pt",
+        num_train_steps=30_000,  # 调整为 20000 步
+        log_interval=5,  # 每 10 个 step 记录一次指标到 wandb 和日志
+        wandb_enabled=True,  # 启用 wandb 日志，包含 action reconstruction error
+    ),
     #
     # Fine-tuning Aloha configs.
     #

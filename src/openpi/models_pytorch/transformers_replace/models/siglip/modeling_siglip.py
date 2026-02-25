@@ -34,6 +34,14 @@ from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...utils import ModelOutput, auto_docstring, can_return_tuple, logging, torch_int
 from .configuration_siglip import SiglipConfig, SiglipTextConfig, SiglipVisionConfig
 
+# Import ToMe for token merging inside ViT
+try:
+    import openpi.models_pytorch.tome_pytorch as _tome
+    _TOME_AVAILABLE = True
+except ImportError:
+    _TOME_AVAILABLE = False
+    _tome = None
+
 
 logger = logging.get_logger(__name__)
 
@@ -555,11 +563,88 @@ class SiglipEncoder(nn.Module):
         config: SiglipConfig
     """
 
-    def __init__(self, config: SiglipConfig):
+    def __init__(self, config: Union[SiglipConfig, SiglipVisionConfig]):
         super().__init__()
         self.config = config
         self.layers = nn.ModuleList([SiglipEncoderLayer(config) for _ in range(config.num_hidden_layers)])
         self.gradient_checkpointing = False
+        
+        # ToMe configuration - get from config or use defaults
+        tome_enabled_from_config = getattr(config, 'tome_enabled', False)
+        self.tome_enabled = tome_enabled_from_config and _TOME_AVAILABLE
+        self.tome_ratio = getattr(config, 'tome_ratio', 0.75)
+        self.tome_metric = getattr(config, 'tome_metric', 'cosine')
+        # How often to apply ToMe (every N layers). Default: apply every layer (interval=1) for maximum acceleration
+        self.tome_interval = getattr(config, 'tome_interval', 1)
+        
+        # ToFu configuration - get from config or use defaults
+        try:
+            import openpi.models_pytorch.tofu_pytorch as _tofu_module
+            _TOFU_AVAILABLE = True
+        except ImportError:
+            _TOFU_AVAILABLE = False
+            _tofu_module = None
+        
+        self._tofu_module = _tofu_module  # Store module reference for use in forward
+        tofu_enabled_from_config = getattr(config, 'tofu_enabled', False)
+        self.tofu_enabled = tofu_enabled_from_config and _TOFU_AVAILABLE
+        self.tofu_ratio = getattr(config, 'tofu_ratio', 0.75)
+        self.tofu_method = getattr(config, 'tofu_method', 'norm')
+        self.tofu_use_fusion = getattr(config, 'tofu_use_fusion', True)
+        self.tofu_fusion_ratio = getattr(config, 'tofu_fusion_ratio', 0.5)
+        self.tofu_interval = getattr(config, 'tofu_interval', 1)
+        
+        # Debug: log ToFu configuration status
+        if tofu_enabled_from_config and not _TOFU_AVAILABLE:
+            logger.warning("ToFu was requested but module is not available")
+            print("[ToFu Debug] ⚠️ ToFu was requested but module is not available")
+        elif self.tofu_enabled:
+            msg = (
+                f"[ToFu] ✅ Enabled in ViT: ratio={self.tofu_ratio:.3f}, "
+                f"method={self.tofu_method}, use_fusion={self.tofu_use_fusion}, "
+                f"fusion_ratio={self.tofu_fusion_ratio:.3f}, interval={self.tofu_interval}, "
+                f"_TOFU_AVAILABLE={_TOFU_AVAILABLE}"
+            )
+            logger.info(msg)
+            print(msg)
+        
+        # Debug: log configuration status
+        if tome_enabled_from_config and not _TOME_AVAILABLE:
+            logger.warning("ToMe was requested but module is not available")
+            print("[ToMe Debug] ⚠️ ToMe was requested but module is not available")
+        elif not tome_enabled_from_config:
+            logger.debug(f"ToMe not enabled in config (tome_enabled={tome_enabled_from_config})")
+            print(f"[ToMe Debug] ⚠️ ToMe not enabled in config (tome_enabled={tome_enabled_from_config})")
+        
+        # Calculate per-application ratio for layers 2-5
+        # We apply ToMe in layers 2-5 (layer_idx 1-4) to progressively reduce tokens
+        # 4 applications, each with 50% reduction (max allowed by bipartite_soft_merge)
+        if self.tome_enabled:
+            num_applications = 4  # Apply in layers 2-5 (4 layers)
+            if num_applications > 0:
+                # Calculate ratio per application: final_ratio = (per_app_ratio)^num_applications
+                # So per_app_ratio = final_ratio^(1/num_applications)
+                self.tome_ratio_per_application = self.tome_ratio ** (1.0 / num_applications)
+            else:
+                self.tome_ratio_per_application = self.tome_ratio
+            msg = (
+                f"[ToMe] ✅ Enabled in ViT: target_ratio={self.tome_ratio:.3f}, "
+                f"per_application_ratio={self.tome_ratio_per_application:.3f}, "
+                f"layers=2-5 (layer_idx 1-4), num_layers={config.num_hidden_layers}, "
+                f"num_applications={num_applications}, _TOME_AVAILABLE={_TOME_AVAILABLE}"
+            )
+            logger.info(msg)
+            print(msg)  # Also print to stdout to ensure visibility
+        else:
+            msg = (
+                f"[ToMe] ❌ Not enabled in SiglipEncoder: "
+                f"tome_enabled_from_config={tome_enabled_from_config}, "
+                f"_TOME_AVAILABLE={_TOME_AVAILABLE}, "
+                f"config has tome_enabled={hasattr(config, 'tome_enabled')}, "
+                f"config.tome_enabled={getattr(config, 'tome_enabled', 'N/A')}"
+            )
+            logger.warning(msg)
+            print(msg)  # Also print to stdout to ensure visibility
 
     # Ignore copy
     @can_return_tuple
@@ -601,7 +686,7 @@ class SiglipEncoder(nn.Module):
         all_attentions = () if output_attentions else None
 
         hidden_states = inputs_embeds
-        for encoder_layer in self.layers:
+        for layer_idx, encoder_layer in enumerate(self.layers):
             if output_hidden_states:
                 encoder_states = encoder_states + (hidden_states,)
 
@@ -612,6 +697,95 @@ class SiglipEncoder(nn.Module):
             )
 
             hidden_states = layer_outputs[0]
+            
+            # Apply ToMe token merging in layers 2-5 (layer_idx 1-4, 0-indexed)
+            # This targets the early-middle layers where token merging is most effective
+            # Layer 2: reduce from ~256 to ~128 tokens (50% reduction, max allowed)
+            # Layer 3: reduce from ~128 to ~64 tokens (50% reduction)
+            # Layer 4: reduce from ~64 to ~32 tokens (50% reduction)
+            # Layer 5: reduce from ~32 to ~16 tokens (50% reduction)
+            should_apply_tome = (
+                self.tome_enabled 
+                and layer_idx >= 1  # Start from layer 2 (index 1)
+                and layer_idx <= 4  # End at layer 5 (index 4)
+            )
+            
+            if should_apply_tome:
+                original_num_tokens = hidden_states.shape[1]
+                hidden_states = _tome.apply_tome(
+                    hidden_states,
+                    ratio=self.tome_ratio_per_application,
+                    metric=self.tome_metric,
+                    enabled=True,
+                )
+                new_num_tokens = hidden_states.shape[1]
+                # Always print to see what's happening
+                msg = (
+                    f"[ToMe] Layer {layer_idx+1}: {original_num_tokens} -> {new_num_tokens} tokens "
+                    f"(ratio={self.tome_ratio_per_application:.3f}, reduction={1.0 - new_num_tokens/original_num_tokens:.1%})"
+                )
+                logger.info(msg)
+                print(msg)  # Also print to stdout
+                
+            # Apply ToFu token filtering/fusion in layers 2-5 (layer_idx 1-4, 0-indexed)
+            # ToFu can be applied after ToMe or independently
+            should_apply_tofu = (
+                self.tofu_enabled 
+                and layer_idx >= 1  # Start from layer 2 (index 1)
+                and layer_idx <= 4  # End at layer 5 (index 4)
+            )
+            
+            if should_apply_tofu:
+                original_num_tokens_tofu = hidden_states.shape[1]
+                if self._tofu_module is None:
+                    print(f"[ToFu] ⚠️ Layer {layer_idx+1}: ToFu module is None, skipping")
+                else:
+                    hidden_states = self._tofu_module.apply_tofu(
+                        hidden_states,
+                        ratio=self.tofu_ratio,
+                        method=self.tofu_method,
+                        use_fusion=self.tofu_use_fusion,
+                        fusion_ratio=self.tofu_fusion_ratio,
+                        enabled=True,
+                    )
+                    new_num_tokens_tofu = hidden_states.shape[1]
+                    # Always print to see what's happening
+                    reduction_pct = 1.0 - new_num_tokens_tofu/original_num_tokens_tofu if original_num_tokens_tofu > 0 else 0.0
+                    msg = (
+                        f"[ToFu] Layer {layer_idx+1}: {original_num_tokens_tofu} -> {new_num_tokens_tofu} tokens "
+                        f"(ratio={self.tofu_ratio:.3f}, method={self.tofu_method}, "
+                        f"use_fusion={self.tofu_use_fusion}, reduction={reduction_pct:.1%})"
+                    )
+                    logger.info(msg)
+                    print(msg)  # Also print to stdout
+                
+                # Update attention_mask to match new token count
+                if attention_mask is not None and new_num_tokens_tofu != original_num_tokens_tofu:
+                    # Adjust attention_mask to match new token count
+                    if attention_mask.shape[1] > new_num_tokens_tofu:
+                        attention_mask = attention_mask[:, :new_num_tokens_tofu]
+                    elif attention_mask.shape[1] < new_num_tokens_tofu:
+                        # Pad attention_mask if needed (shouldn't happen, but handle it)
+                        pad_size = new_num_tokens_tofu - attention_mask.shape[1]
+                        attention_mask = torch.cat([
+                            attention_mask,
+                            torch.ones((attention_mask.shape[0], pad_size), 
+                                     dtype=attention_mask.dtype, 
+                                     device=attention_mask.device)
+                        ], dim=1)
+            
+            # Update attention_mask to match new token count (for ToMe)
+            # Note: This is a simplified approach - in practice, attention_mask
+            # should be adjusted more carefully, but for ViT internal processing
+            # we can often get away with this since all tokens are typically valid
+            if should_apply_tome and attention_mask is not None and new_num_tokens != original_num_tokens:
+                    # Resize attention_mask: take first new_num_tokens elements
+                    if attention_mask.dim() == 2:
+                        # (batch, seq_len) -> take first new_num_tokens
+                        attention_mask = attention_mask[:, :new_num_tokens]
+                    elif attention_mask.dim() == 4:
+                        # (batch, 1, seq_len, seq_len) -> resize both dimensions
+                        attention_mask = attention_mask[:, :, :new_num_tokens, :new_num_tokens]
 
             if output_attentions:
                 all_attentions = all_attentions + (layer_outputs[1],)
@@ -751,6 +925,14 @@ class SiglipVisionTransformer(nn.Module):
         self.config = config
         embed_dim = config.hidden_size
 
+        # Debug: print config before creating encoder
+        print(f"[ToMe Debug] SiglipVisionTransformer.__init__ called")
+        print(f"[ToMe Debug] config type: {type(config)}")
+        print(f"[ToMe Debug] hasattr(config, 'tome_enabled'): {hasattr(config, 'tome_enabled')}")
+        if hasattr(config, 'tome_enabled'):
+            print(f"[ToMe Debug] config.tome_enabled = {config.tome_enabled}")
+            print(f"[ToMe Debug] config.tome_ratio = {getattr(config, 'tome_ratio', 'NOT FOUND')}")
+
         self.embeddings = SiglipVisionEmbeddings(config)
         self.encoder = SiglipEncoder(config)
         self.post_layernorm = nn.LayerNorm(embed_dim, eps=config.layer_norm_eps)
@@ -831,7 +1013,6 @@ class SiglipVisionModel(SiglipPreTrainedModel):
 
     def __init__(self, config: SiglipVisionConfig):
         super().__init__(config)
-
         self.vision_model = SiglipVisionTransformer(config)
 
         # Initialize weights and apply final processing

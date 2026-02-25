@@ -1,6 +1,7 @@
 import dataclasses
 import enum
 import logging
+import pathlib
 import socket
 
 import tyro
@@ -36,6 +37,16 @@ class Default:
 
 
 @dataclasses.dataclass
+class LocalCheckpoint:
+    """Load a policy from a local checkpoint directory."""
+    
+    # Local checkpoint directory path (e.g., "/home/wyz/openpi/checkpoints/pi05_libero_pytorch.pt")
+    path: str
+    # Training config name (e.g., "pi05_libero"). If not provided, will try to auto-detect from checkpoint.
+    config: str | None = None
+
+
+@dataclasses.dataclass
 class Args:
     """Arguments for the serve_policy script."""
 
@@ -52,7 +63,8 @@ class Args:
     record: bool = False
 
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
-    policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
+    # Can be: Default, Checkpoint, or LocalCheckpoint
+    policy: Checkpoint | Default | LocalCheckpoint = dataclasses.field(default_factory=Default)
 
 
 # Default checkpoints that should be used for each environment.
@@ -91,6 +103,46 @@ def create_policy(args: Args) -> _policy.Policy:
         case Checkpoint():
             return _policy_config.create_trained_policy(
                 _config.get_config(args.policy.config), args.policy.dir, default_prompt=args.default_prompt
+            )
+        case LocalCheckpoint():
+            # 尝试从 checkpoint 目录名或 config.json 推断 config
+            checkpoint_path = pathlib.Path(args.policy.path)
+            config_name = args.policy.config
+            
+            if config_name is None:
+                # 尝试从路径推断
+                if "libero" in checkpoint_path.name.lower():
+                    config_name = "pi05_libero"
+                elif "aloha" in checkpoint_path.name.lower():
+                    if "sim" in checkpoint_path.name.lower():
+                        config_name = "pi0_aloha_sim"
+                    else:
+                        config_name = "pi05_aloha"
+                elif "droid" in checkpoint_path.name.lower():
+                    config_name = "pi05_droid"
+                else:
+                    # 尝试读取 config.json
+                    config_json_path = checkpoint_path / "config.json"
+                    if config_json_path.exists():
+                        import json
+                        with open(config_json_path) as f:
+                            config_data = json.load(f)
+                            # 尝试从 config.json 中获取 config 名称
+                            config_name = config_data.get("config_name") or config_data.get("config")
+                    
+                    if config_name is None:
+                        raise ValueError(
+                            f"Could not auto-detect config name from checkpoint path: {checkpoint_path}\n"
+                            f"Please specify --policy.config explicitly, e.g., --policy.config=pi05_libero"
+                        )
+            
+            logging.info(f"Loading local checkpoint from: {checkpoint_path}")
+            logging.info(f"Using config: {config_name}")
+            
+            return _policy_config.create_trained_policy(
+                _config.get_config(config_name), 
+                str(checkpoint_path), 
+                default_prompt=args.default_prompt
             )
         case Default():
             return create_default_policy(args.env, default_prompt=args.default_prompt)

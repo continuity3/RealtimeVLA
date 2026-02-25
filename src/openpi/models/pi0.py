@@ -11,6 +11,7 @@ from openpi.models import model as _model
 from openpi.models import pi0_config
 import openpi.models.gemma as _gemma
 import openpi.models.siglip as _siglip
+import openpi.models.tome as _tome
 from openpi.shared import array_typing as at
 
 logger = logging.getLogger("openpi")
@@ -66,6 +67,7 @@ def posemb_sincos(
 class Pi0(_model.BaseModel):
     def __init__(self, config: pi0_config.Pi0Config, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
+        self.config = config
         self.pi05 = config.pi05
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
@@ -112,6 +114,15 @@ class Pi0(_model.BaseModel):
         # embed images
         for name in obs.images:
             image_tokens, _ = self.PaliGemma.img(obs.images[name], train=False)
+
+            # Apply ToMe (Token Merging) if enabled
+            if hasattr(self, 'config') and hasattr(self.config, 'tome_enabled'):
+                image_tokens = _tome.apply_tome(
+                    image_tokens,
+                    ratio=self.config.tome_ratio,
+                    metric=self.config.tome_metric,
+                    enabled=self.config.tome_enabled,
+                )
 
             tokens.append(image_tokens)
             input_mask.append(

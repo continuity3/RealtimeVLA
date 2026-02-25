@@ -46,12 +46,24 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
     @override
     def infer(self, obs: Dict) -> Dict:  # noqa: UP006
         data = self._packer.pack(obs)
-        self._ws.send(data)
-        response = self._ws.recv()
+        try:
+            self._ws.send(data)
+            # Set a timeout for receiving response (300 seconds for first inference which may trigger compilation)
+            response = self._ws.recv(timeout=300.0)
+        except Exception as e:
+            raise RuntimeError(f"Failed to communicate with inference server: {e}")
+        
         if isinstance(response, str):
             # we're expecting bytes; if the server sends a string, it's an error.
             raise RuntimeError(f"Error in inference server:\n{response}")
-        return msgpack_numpy.unpackb(response)
+        
+        result = msgpack_numpy.unpackb(response)
+        
+        # Check if server returned an error
+        if isinstance(result, dict) and "error" in result:
+            raise RuntimeError(f"Error from inference server:\n{result['error']}")
+        
+        return result
 
     @override
     def reset(self) -> None:

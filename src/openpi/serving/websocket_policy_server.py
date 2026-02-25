@@ -42,6 +42,9 @@ class WebsocketPolicyServer:
             compression=None,
             max_size=None,
             process_request=_health_check,
+            ping_interval=20,  # Send ping every 20 seconds
+            ping_timeout=10,   # Wait 10 seconds for pong response
+            close_timeout=10,  # Wait 10 seconds when closing
         ) as server:
             await server.serve_forever()
 
@@ -56,9 +59,23 @@ class WebsocketPolicyServer:
             try:
                 start_time = time.monotonic()
                 obs = msgpack_numpy.unpackb(await websocket.recv())
+                logger.info(f"Received observation from {websocket.remote_address}, keys: {list(obs.keys()) if isinstance(obs, dict) else 'not a dict'}")
 
                 infer_time = time.monotonic()
-                action = self._policy.infer(obs)
+                logger.info(f"Starting inference...")
+                try:
+                    action = self._policy.infer(obs)
+                    logger.info(f"Inference completed successfully")
+                except Exception as infer_error:
+                    error_traceback = traceback.format_exc()
+                    logger.error(f"Inference error: {infer_error}\n{error_traceback}")
+                    error_msg = f"Inference failed: {str(infer_error)}\n{error_traceback}"
+                    try:
+                        await websocket.send(packer.pack({"error": error_msg}))
+                    except Exception:
+                        pass  # Connection may already be closed
+                    raise
+                
                 infer_time = time.monotonic() - infer_time
 
                 action["server_timing"] = {
@@ -68,18 +85,25 @@ class WebsocketPolicyServer:
                     # We can only record the last total time since we also want to include the send time.
                     action["server_timing"]["prev_total_ms"] = prev_total_time * 1000
 
+                logger.info(f"Sending action response, infer_time: {infer_time*1000:.2f}ms")
                 await websocket.send(packer.pack(action))
                 prev_total_time = time.monotonic() - start_time
+                logger.info(f"Total request time: {prev_total_time*1000:.2f}ms")
 
             except websockets.ConnectionClosed:
                 logger.info(f"Connection from {websocket.remote_address} closed")
                 break
-            except Exception:
-                await websocket.send(traceback.format_exc())
-                await websocket.close(
-                    code=websockets.frames.CloseCode.INTERNAL_ERROR,
-                    reason="Internal server error. Traceback included in previous frame.",
-                )
+            except Exception as e:
+                error_traceback = traceback.format_exc()
+                logger.error(f"Error in handler: {e}\n{error_traceback}")
+                try:
+                    await websocket.send(packer.pack({"error": error_traceback}))
+                    await websocket.close(
+                        code=websockets.frames.CloseCode.INTERNAL_ERROR,
+                        reason="Internal server error. Traceback included in previous frame.",
+                    )
+                except Exception:
+                    pass  # Connection may already be closed
                 raise
 
 
